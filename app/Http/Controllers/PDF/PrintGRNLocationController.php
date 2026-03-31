@@ -1,0 +1,395 @@
+<?php
+
+namespace App\Http\Controllers\PDF;
+
+
+use App\Http\Controllers\Controller;
+use Illuminate\Http\Request;
+use App\Models\Supplier;
+use App\Models\Transporter;
+use App\Models\Item;
+use App\Models\Location;
+use App\Models\GRNMaterial;
+use App\Models\GRNMaterialDetails;
+use Illuminate\Support\Facades\Date;
+use Illuminate\Support\Facades\DB;
+use App\Http\Controllers\PurchaseOrderController;
+use App\Http\Controllers\GRNMaterialController;
+use App\Models\PurchaseOrder;
+use Illuminate\Mail\Transport\Transport;
+use TCPDF;
+class PrintGRNLocationController extends Controller
+{
+    public function printGRNLocation(Request $request, $id){
+
+        $request->id = base64_decode($id);
+    
+        $grnMaterial = GRNMaterial::select(
+            'grn_material_receipt.grn_id',
+            'grn_material_receipt.grn_number',
+            'grn_material_receipt.grn_date',
+            'grn_material_receipt.bill_no',
+            'grn_material_receipt.bill_date',
+            'transporters.transporter_name',
+            'grn_material_receipt.vehicle_no',
+            'grn_material_receipt.lr_no_date',
+            'grn_material_receipt.special_notes',
+            'grn_material_receipt.supplier_id',
+            'suppliers.supplier_name',
+            'suppliers.GSTIN',
+            'suppliers.address',
+            'suppliers.pincode',
+            'villages.village_name',
+            'villages.default_pincode',
+            'talukas.taluka_name',
+            'districts.district_name',
+            'states.state_name',
+            'countries.country_name',
+            'locations.location_name',
+        )
+        ->leftJoin('suppliers', 'suppliers.id', '=', 'grn_material_receipt.supplier_id')
+        ->leftJoin('locations', 'locations.id', '=', 'grn_material_receipt.to_location_id')
+        ->leftJoin('transporters', 'transporters.id', '=', 'grn_material_receipt.transporter_id')
+        ->leftJoin('villages', 'villages.id', '=', 'suppliers.village_id')
+        ->leftJoin('talukas', 'talukas.id', '=', 'villages.taluka_id')
+        ->leftJoin('districts', 'districts.id', '=', 'talukas.district_id')
+        ->leftJoin('states', 'states.id', '=', 'districts.state_id')
+        ->leftJoin('countries', 'countries.id', '=', 'states.country_id')
+        ->where('grn_id', $request->id)->first();
+
+        $grnMaterial->grn_date = Date::createFromFormat('Y-m-d', $grnMaterial->grn_date)->format('d/m/Y');
+
+
+        if($grnMaterial->bill_date != "" && $grnMaterial->bill_date != null)
+        {
+            $grnMaterial->bill_date = Date::createFromFormat('Y-m-d', $grnMaterial->bill_date)->format('d/m/Y');
+        }
+
+        // dd($grnMaterial);
+
+        $grnMaterialDetails = GRNMaterialDetails::select(
+            // 'items.item_name',
+        // 'units.unit_name',
+        DB::raw("CASE  WHEN item_details.secondary_item_name IS NOT NULL THEN item_details.secondary_item_name 
+            ELSE items.item_name END as item_name"),
+         DB::raw("CASE  WHEN second_unit.unit_name IS NOT NULL THEN second_unit.unit_name 
+            ELSE units.unit_name END as unit_name"),
+        'material_receipt_grn_details.grn_qty','material_receipt_grn_details.rate_per_unit','material_receipt_grn_details.remarks')
+        ->leftJoin('dispatch_plan_details','dispatch_plan_details.dp_details_id','=','material_receipt_grn_details.dc_details_id')
+        ->leftJoin('dispatch_plan','dispatch_plan.dp_id','=','dispatch_plan_details.dp_id')
+        ->leftJoin('grn_secondary_details','grn_secondary_details.grn_details_id','=','material_receipt_grn_details.grn_details_id')
+        ->leftJoin('items', 'items.id', 'material_receipt_grn_details.item_id')
+        ->leftJoin('item_details', 'item_details.item_details_id', 'grn_secondary_details.item_details_id')
+        ->leftJoin('units','units.id','=','items.unit_id')
+        ->leftJoin('units as second_unit','second_unit.id','=','items.second_unit')
+        ->where('grn_id','=',$request->id)
+        ->get();        
+
+        if ($grnMaterialDetails != null) {
+            foreach ($grnMaterialDetails as $cpKey => $cpVal) {
+                if ($cpVal->po_date != null) {
+                    $cpVal->po_date = Date::createFromFormat('Y-m-d', $cpVal->po_date)->format('d/m/Y');
+                }
+            }
+        }
+
+        $dispatchData = GRNMaterialDetails::select( 'dispatch_plan.dp_number','dispatch_plan.dp_date',)
+        ->leftJoin('dispatch_plan_details','dispatch_plan_details.dp_details_id','=','material_receipt_grn_details.dc_details_id')
+        ->leftJoin('dispatch_plan','dispatch_plan.dp_id','=','dispatch_plan_details.dp_id')        
+        ->where('grn_id','=',$request->id)
+        ->first();
+
+         if ($dispatchData != null) {
+                    $dispatchData->dp_date = Date::createFromFormat('Y-m-d', $dispatchData->dp_date)->format('d/m/Y');
+        }       
+
+
+         $grnNumber =  $grnMaterial->grn_number != '' &&  $grnMaterial->grn_number != null ? str_replace("/", "_", $grnMaterial->grn_number) : "";
+
+       
+         $pdfName = 'GRN_'.$grnNumber.'_Bhumi Polymers Pvt. Ltd.';
+
+         $pdfName = trim($pdfName, ".");
+
+         $pdf = new MYPDF(PDF_PAGE_ORIENTATION, PDF_UNIT, PDF_PAGE_FORMAT, true, 'UTF-8', false);
+
+
+          // set document information
+        $pdf->setCreator(PDF_CREATOR);
+        $pdf->setAuthor('Nicola Asuni');
+        $pdf->setTitle($pdfName);
+        $pdf->setSubject('TCPDF Tutorial');
+        $pdf->setKeywords('TCPDF, PDF, example, test, guide');
+
+
+        $pdf->setHeaderFont(array(PDF_FONT_NAME_MAIN, '', PDF_FONT_SIZE_MAIN));
+
+        $pdf->setHeaderMargin(PDF_MARGIN_HEADER);
+        $pdf->setFooterMargin(PDF_MARGIN_FOOTER);
+
+        // set margins
+
+        $pdf->setMargins(PDF_MARGIN_LEFT, PDF_MARGIN_TOP + 10, PDF_MARGIN_RIGHT, false);
+
+        // set auto page breaks
+        $pdf->setAutoPageBreak(TRUE, PDF_MARGIN_BOTTOM);
+
+        // set image scale factor
+        $pdf->setImageScale(PDF_IMAGE_SCALE_RATIO);
+
+        // set some language-dependent strings (optional)
+        if (@file_exists(dirname(__FILE__) . '/lang/eng.php')) {
+            require_once(dirname(__FILE__) . '/lang/eng.php');
+            $pdf->setLanguageArray($l);
+        }
+
+        // ---------------------------------------------------------
+
+        // set font
+        $pdf->setFont('helvetica', '', 12);
+
+        // add a page
+        $pdf->AddPage();
+
+      
+        if ($grnMaterial->grn_number != "") {
+            $grn_no = 'GRN No.&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;:&nbsp;<b>' . $grnMaterial->grn_number . '</b>';
+        }else{
+            $grn_no = '';
+        }
+
+
+        if ($grnMaterial->grn_date != "") {
+            $grn_date = '<br>GRN Date &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;:&nbsp;' . $grnMaterial->grn_date;
+        }else{
+            $grn_date = '';
+        }
+
+        if ($grnMaterial->bill_no != "") {
+            $challan_no = '<br>Challan No.&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;:&nbsp;' . $grnMaterial->bill_no;
+        }else{
+            $challan_no = '';
+        }
+
+        if ($grnMaterial->bill_date != "") {
+            $challan_date = '<br>Challan Date &nbsp;&nbsp;&nbsp;:&nbsp;' . $grnMaterial->bill_date;
+        }else{
+            $challan_date = '';
+        }
+
+        if ($dispatchData->dp_number != "") {
+            $dp_number = '<br>DP No.&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;:&nbsp;' . $dispatchData->dp_number;
+        }else{
+            $dp_number = '';
+        }
+
+        if ($dispatchData->dp_date != "") {
+            $dp_date = '<br>DP Date &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;:&nbsp;' . $dispatchData->dp_date;
+        }else{
+            $dp_date = '';
+        }
+
+        if ($grnMaterial->location_name != "") {
+            $location_name = '<br>Location &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;:&nbsp;' . $grnMaterial->location_name;
+        }else{
+            $location_name = '';
+        }
+
+        if($grnMaterial != ""){
+            $_SESSION['grnMaterial'] = $grnMaterial;
+        }
+
+
+        $counter = 0;
+        $content = '';
+
+
+     
+
+   
+
+       foreach($grnMaterialDetails as $key => $val){
+    
+        $counter ++;
+
+        $content .= '<tr>             
+                        <td style="text-align:center; width:5%;">' . $counter . '</td>
+                        <td style="width:58%;text-align:left">' . $val['item_name'] . '</td>    
+                        <td style="text-align:center; width:12%;">' . number_format((float)$val['grn_qty'], 3, '.','') . '</td>
+                        <td style="text-align:center; width:10%;">'  . $val['unit_name'] . '</td>
+                        <td style="text-align:center; width:15%;">'  . $val['remark'] . '</td>
+                        </tr>';
+                    }
+                 
+
+
+        $tbl = <<<EOD
+
+        <table cellspacing="0" cellpadding="3" border="1"  style="border-top:none; text-aling:center; font-size:11px; width:100%;">
+            <thead>            
+                <tr>
+                    <th colspan="8" style="text-align:center; font-weight:bold; padding:6px;"><strong>GOODS RECEIPT NOTE</strong></th>
+                </tr>
+                <tr>
+                    <td colspan="4">$location_name$dp_number$dp_date</td>
+                    <td colspan="4">$grn_no$grn_date$challan_no$challan_date</td>
+                </tr>
+                <tr>
+                    <th style="text-align:center; width:5%;"><b>No.</b></th>
+                    <th style="text-align:center; width:58%;"><b>Description</b></th>
+                    <th style="text-align:center; width:12%;"><b>GRN Qty.</b></th>
+                    <th style="text-align:center; width:10%;"><b>Unit</b></th>
+                    <th style="text-align:center; width:15%;"><b>Remark</b></th>
+                    
+                </tr>
+            </thead>
+            <tbody>
+                $content
+            </tbody>                               
+        </table>
+        EOD;
+        // <th style="text-align:center; width:15%;"><b>Remark</b></th>
+        // <th style="text-align:center; width:10%;"><b>Rate</b></th>
+        $pdf->writeHTML($tbl, true, false, false, false, '');
+        //$pdf->endPage(false);
+        //$pdf->startTransaction();
+
+        $content = $pdf->customFooter();
+        $js = <<<EOD
+                        var footerlen=document.getElementById("footerTbl").length;
+                        app.alert(footerlen);
+                    EOD;
+        //$pdf->includeJs($js);
+        //$pdf->writeHTML($content, true, false, false, false, '');
+        $pdf->writeHTMLCell(0, 0, '', '', $content, 0, 0, false, true, "L", true);
+        $lastH = $pdf->getLastH();
+        //$pH=$pdf->getPageHeight();
+        //$diff=$pH-$lastH;
+        //echo $pH-$diff;
+        $pdf = $pdf->rollbackTransaction();
+        $pdf->commitTransaction();
+        $pdf->pCounter = $pdf->getNumPages();
+        $pdf->fHeight = $lastH;
+
+        // ---------------------------------------------------------
+        //Close and output PDF document
+        // $pdf->render($pdfName . '.pdf', 'I');
+        $pdf->Output(urlencode($pdfName) . '.pdf', 'I');
+        //============================================================+
+        // END OF FILE
+        //============================================================+
+    }
+}
+
+
+class MyPDF extends TCPDF
+{
+    //Page header
+    public $pCounter;
+    public $fHeight;
+
+
+    public function Header()
+    {
+        $header = commonPdfHeader("PO");
+        $this->writeHTMLCell(0, '', '', '', $header, 0, 0, false,true, "L", true);
+    }
+
+
+    // Page footer
+    public function Footer()
+    {
+        // Set font
+        $this->setFont('helvetica', '', 8);
+        // Page number
+        $n = "";
+
+        $var1 = $this->getAliasNumPage();
+        $var2 = $this->getAliasNbPages();
+
+        $content2 = $this->customFooter();
+        //$height=$this->getStringHeight(0,$content2);
+
+        $content = "";
+        if (isset($this->pCounter) && ($this->getPage() == $this->pCounter)) {
+            $height = 8 + $this->fHeight;
+            $this->setY(-$height);
+            //$this->setAutoPageBreak(TRUE, 80);
+            $content = $content2;
+        } else {
+            $this->setY(-8);
+            $height = $this->getRemainingWidth();  // Added on 2nd Oct 2023
+        }
+
+        $tbl = <<<EOD
+            $content
+            <table width="100%" cellpadding="6" cellspacing="0" border="0">
+                <tr><td style="text-align:center;">Page $var1 / $var2</td></tr>
+            </table>
+            EOD;
+
+        $this->writeHTMLCell(0, '', '', '', $tbl, 0, 0, false, true, "L", true);
+
+        /** Added on 2nd Oct 2023 ***/
+        $this->Line(PDF_MARGIN_LEFT, PDF_MARGIN_TOP + 10, PDF_MARGIN_LEFT, $this->getPageHeight() - $height);  //left border
+        $this->Line($this->getPageWidth() - PDF_MARGIN_RIGHT, PDF_MARGIN_TOP + 10, $this->getPageWidth() - PDF_MARGIN_RIGHT, $this->getPageHeight() - $height); //right border
+        $this->Line(PDF_MARGIN_LEFT, PDF_MARGIN_TOP + 10, $this->getPageWidth() - PDF_MARGIN_RIGHT, PDF_MARGIN_TOP + 10);  //top border
+        //$this->Line(PDF_MARGIN_LEFT, $this->getPageHeight()-$height, $this->getPageWidth()-PDF_MARGIN_RIGHT, $this->getPageHeight()-$height);  //bottom border
+        /** \Added on 2nd Oct 2023 ***/
+    }
+
+    public function customFooter()
+    {
+        $location  = getCurrentLocation();
+
+        $header_print = $location->header_print != '' ? $location->header_print: '';
+
+        $grnMaterial = $_SESSION['grnMaterial'];
+
+        $transporter_name = $grnMaterial->transporter_name != '' ? $grnMaterial->transporter_name  : '';
+        $vehicle_no = $grnMaterial->vehicle_no != '' ? $grnMaterial->vehicle_no  : '';
+        $lr_no_date = $grnMaterial->lr_no_date != '' ? $grnMaterial->lr_no_date  : '';
+        $special_notes = $grnMaterial->special_notes != '' ? $grnMaterial->special_notes  : '';
+
+  
+     
+        $this->setFont('helvetica', '', 8);
+
+        $tbl = <<<EOD
+                <table cellspacing="0" cellpadding="2" border="1" id="footerTbl" nobr="true">
+                    <tr>
+                        <td style="width:20%;">Transporter</td>
+                        <td style="width:20%;">$transporter_name</td> 
+                        <td rowspan="3" colspan="6" style="width:60%;"> NOTE: $special_notes </td>
+                    </tr>
+                    <tr>
+                        <th>Vehicle No.</th> 
+                        <td>$vehicle_no </td>
+                    </tr>
+                    <tr>
+                        <th>LR No. & Date</th> 
+                        <td>$lr_no_date </td>
+                    </tr>
+                    <tr valign="top">
+                        <td colspan="2" ></td>
+
+                        <td colspan="3" style="text-align:center;"> Inspection By: <p style="border-top:1px solid black;">  </p></td>
+
+                        <td colspan="3" style="height:60px;text">
+                        For,<span> Bhumi Polymers Pvt. Ltd.&nbsp;&nbsp;</span><br><br><br><br>
+                        <span> Authorised Signatory&nbsp;&nbsp;</span>
+                        </td>
+                    </tr>
+                    <tr>    
+                        <td colspan="8" style="color:#5A7D29; text-align:center; font-size:15px; border-right:1px solid black; border-left:1px solid black;"> Bhumi Polymers Private Limited </td> 
+                    </tr>
+                    <tr>
+                        <td colspan="8" style="border-bottom:1px solid black; border-right:1px solid black; border-left:1px solid black; text-align:center; ">$header_print</td>
+                    </tr>
+            </table>
+               
+            EOD;
+        return $tbl;
+        $_SESSION = [];
+    }
+}
